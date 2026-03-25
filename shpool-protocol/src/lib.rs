@@ -63,6 +63,26 @@ pub enum ConnectHeader {
     Kill(KillRequest),
     // A request to set the log level to a new value.
     SetLogLevel(SetLogLevelRequest),
+    /// Inject bytes directly into a session's PTY master fd without attaching
+    /// a client. Returns Ok if written, NotFound if no session with that name.
+    SendInput(SendInputRequest),
+}
+
+/// SendInputRequest asks the daemon to inject raw bytes into a named session's
+/// PTY master fd without going through a full attach/detach cycle.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SendInputRequest {
+    pub session: String,
+    /// Raw bytes to write to the PTY master
+    pub data: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum SendInputReply {
+    /// Bytes were written successfully
+    Ok,
+    /// No session with that name
+    NotFound,
 }
 
 /// KillRequest represents a request to kill

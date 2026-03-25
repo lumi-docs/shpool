@@ -35,9 +35,9 @@ use anyhow::{anyhow, Context};
 use nix::unistd;
 use shpool_protocol::{
     AttachHeader, AttachReplyHeader, AttachStatus, ConnectHeader, DetachReply, DetachRequest,
-    KillReply, KillRequest, ListReply, LogLevel, ResizeReply, Session, SessionMessageDetachReply,
-    SessionMessageReply, SessionMessageRequest, SessionMessageRequestPayload, SessionStatus,
-    SetLogLevelReply, SetLogLevelRequest, VersionHeader,
+    KillReply, KillRequest, ListReply, LogLevel, ResizeReply, SendInputReply, SendInputRequest,
+    Session, SessionMessageDetachReply, SessionMessageReply, SessionMessageRequest,
+    SessionMessageRequestPayload, SessionStatus, SetLogLevelReply, SetLogLevelRequest, VersionHeader,
 };
 use tracing::{debug, error, info, instrument, span, warn, Level};
 
@@ -209,6 +209,7 @@ impl Server {
             ConnectHeader::List => self.handle_list(stream),
             ConnectHeader::SessionMessage(header) => self.handle_session_message(stream, header),
             ConnectHeader::SetLogLevel(r) => self.handle_set_log_level(stream, r),
+            ConnectHeader::SendInput(r) => self.handle_send_input(stream, r),
         }
     }
 
@@ -590,6 +591,28 @@ impl Server {
         Ok(())
     }
 
+    #[instrument(skip_all, fields(s = &req.session))]
+    fn handle_send_input(&self, mut stream: UnixStream, req: SendInputRequest) -> anyhow::Result<()> {
+        use std::os::unix::io::AsFd;
+
+        let reply = {
+            let _s = span!(Level::INFO, "lock(shells)").entered();
+            let shells = self.shells.lock().unwrap();
+            if let Some(session) = shells.get(&req.session) {
+                let fd = session.pty_master_fd.as_fd();
+                match nix::unistd::write(fd, &req.data) {
+                    Ok(_) => SendInputReply::Ok,
+                    Err(e) => return Err(anyhow::anyhow!(e)).context("writing to pty master"),
+                }
+            } else {
+                SendInputReply::NotFound
+            }
+        };
+
+        write_reply(&mut stream, reply).context("writing send_input reply")?;
+        Ok(())
+    }
+
     #[instrument(skip_all)]
     fn handle_kill(&self, mut stream: UnixStream, request: KillRequest) -> anyhow::Result<()> {
         let mut not_found_sessions = vec![];
@@ -913,6 +936,16 @@ impl Server {
             }
         });
 
+        // Dup the PTY master fd at Session level so handle_send_input can write
+        // to it without acquiring the SessionInner lock.
+        let pty_master_fd = {
+            use std::os::unix::io::BorrowedFd;
+            let raw = fork.is_parent()?.raw_fd().ok_or(anyhow!("no master fd for dup"))?;
+            // Safety: raw is a valid open fd owned by fork; dup creates a new independent fd.
+            let borrowed = unsafe { BorrowedFd::borrow_raw(raw) };
+            nix::unistd::dup(borrowed).context("dup'ing pty master fd")?
+        };
+
         let prompt_prefix_is_blank =
             self.config.get().prompt_prefix.as_ref().map(|p| p.is_empty()).unwrap_or(false);
         let supports_sentinels =
@@ -1001,6 +1034,7 @@ impl Server {
             started_at: time::SystemTime::now(),
             lifecycle_timestamps: Mutex::new(shell::SessionLifecycleTimestamps::default()),
             inner: Arc::new(Mutex::new(session_inner)),
+            pty_master_fd,
         })
     }
 

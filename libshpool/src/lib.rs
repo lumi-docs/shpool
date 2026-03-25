@@ -41,6 +41,7 @@ mod kill;
 mod list;
 mod protocol;
 mod session_restore;
+mod send_input;
 mod set_log_level;
 mod test_hooks;
 mod tty;
@@ -208,6 +209,18 @@ needs debugging, but would be clobbered by a restart.")]
     SetLogLevel {
         #[clap(help = "new log level")]
         level: shpool_protocol::LogLevel,
+    },
+
+    #[clap(about = "Inject bytes into a named session's PTY without attaching a client.
+
+Exits 0 on success, 1 if the session is not found.
+The data argument must be hex-encoded bytes (e.g. 1b5b5a for a single ShiftTab).")]
+    #[non_exhaustive]
+    SendInput {
+        #[clap(help = "The session name to write to")]
+        session: String,
+        #[clap(help = "Hex-encoded bytes to inject (e.g. 1b5b5a for one ShiftTab)")]
+        data: String,
     },
 }
 
@@ -381,6 +394,7 @@ pub fn run(args: Args, hooks: Option<Box<dyn hooks::Hooks + Send + Sync>>) -> an
         Commands::Kill { sessions } => kill::run(sessions, socket),
         Commands::List { json } => list::run(socket, json),
         Commands::SetLogLevel { level } => set_log_level::run(level, socket),
+        Commands::SendInput { session, data } => send_input::run(session, data, socket),
     };
 
     if let Err(err) = res {

@@ -80,6 +80,9 @@ pub struct Session {
     /// while a tty is attached to the session. Probing the mutex can be used
     /// to determine if someone is currently attached to the session.
     pub inner: Arc<Mutex<SessionInner>>,
+    /// A dup'd copy of the PTY master fd held at Session level so that
+    /// handle_send_input can write to it without acquiring the SessionInner lock.
+    pub pty_master_fd: std::os::unix::io::OwnedFd,
 }
 
 impl Session {
